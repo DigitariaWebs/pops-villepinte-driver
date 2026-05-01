@@ -14,7 +14,12 @@
         "ITSAppUsesNonExemptEncryption": false,
         "NSLocationWhenInUseUsageDescription": "POP'S Driver utilise votre position pour vous guider vers les clients en livraison.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "POP'S Driver suit votre position pour vous guider en temps réel pendant les livraisons, même en arrière-plan.",
-        "UIBackgroundModes": ["location", "audio", "fetch"]
+        "UIBackgroundModes": [
+          "location",
+          "audio",
+          "fetch"
+        ],
+        "MBXAccessToken": "pk.your_public_token_here"
       }
     },
     "android": {
@@ -30,7 +35,12 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION"
+        "FOREGROUND_SERVICE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
       ],
       "predictiveBackGestureEnabled": false
     },
@@ -71,13 +81,13 @@
         {
           "RNMapboxMapsImpl": "mapbox",
           "RNMapboxMapsVersion": "11.11.0",
-          "RNMapboxMapsDownloadToken": "PLACEHOLDER_MAPBOX_DOWNLOADS_SECRET_TOKEN_FILL_IN_ENV"
+          "RNMapboxMapsDownloadToken": "sk.your_secret_downloads_token_here"
         }
       ],
       [
         "@badatgil/expo-mapbox-navigation",
         {
-          "accessToken": "PLACEHOLDER_MAPBOX_PUBLIC_TOKEN_FILL_IN_ENV",
+          "accessToken": "pk.your_public_token_here",
           "mapboxMapsVersion": "11.11.0"
         }
       ]
@@ -87,10 +97,11 @@
     },
     "extra": {
       "router": {},
+      "mapboxPublicToken": "PLACEHOLDER_OVERRIDE_FROM_ENV",
       "eas": {
-        "projectId": "REPLACE_WITH_NEW_EAS_PROJECT_ID"
-      },
-      "mapboxPublicToken": "PLACEHOLDER_OVERRIDE_FROM_ENV"
-    }
+        "projectId": "23c6a0c9-b411-45dc-80e0-0b9ca5cc8929"
+      }
+    },
+    "owner": "achrefdev"
   }
 }
