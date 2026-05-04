@@ -24,7 +24,6 @@
     "production": {
       "ios": {
         "appleId": "ilyes642000@icloud.com",
-        "ascAppId": "REPLACE_WITH_ASC_APP_ID",
         "appleTeamId": "89884BGNZR"
       }
     }
