@@ -14,7 +14,11 @@ import AnimatedSplash from "@/components/splash/AnimatedSplash";
 import { useAppFonts } from "@/constants/fonts";
 import { useAuthStore } from "@/store/auth.store";
 
-const KNOWN_DRIVER_PHONE = "0612345678";
+// In the mock dev flow we don't gate access on the signup form — any phone
+// that completes the OTP step lands straight on the tabs. Set this to a real
+// list of phones (or remove it) once the backend is wired up and we want to
+// force first-time drivers through the signup form.
+const SKIP_SIGNUP_FOR_ALL = true;
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -35,6 +39,15 @@ export default function RootLayout(): React.ReactNode {
       SplashScreen.hideAsync().catch(() => {});
     }
   }, [fontsLoaded]);
+
+  // Auto-complete signup for anyone who already authed but got stranded on the
+  // SignupForm under the older mock flow. Safe to remove once the real backend
+  // is wired up and SKIP_SIGNUP_FOR_ALL is set to false.
+  useEffect(() => {
+    if (SKIP_SIGNUP_FOR_ALL && authed && !signupDone) {
+      completeSignup();
+    }
+  }, [authed, signupDone, completeSignup]);
 
   if (!fontsLoaded) return null;
 
@@ -62,7 +75,7 @@ export default function RootLayout(): React.ReactNode {
         <StatusBar style="dark" />
         <AuthFlow
           onComplete={(p) => {
-            login(p, p === KNOWN_DRIVER_PHONE);
+            login(p, SKIP_SIGNUP_FOR_ALL);
           }}
         />
       </GestureHandlerRootView>

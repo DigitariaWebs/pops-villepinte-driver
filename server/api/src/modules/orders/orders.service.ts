@@ -1,0 +1,348 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { SupabaseClient } from '@supabase/supabase-js';
+import { SUPABASE_ADMIN } from '../../common/supabase/supabase.module';
+import {
+  recalculateLineUnitPrice,
+  recalculateLineTotal,
+  recalculateOrderTotal,
+} from '../../common/utils/price';
+import {
+  ORDER_STATUS_TRANSITIONS,
+  CUSTOMER_CANCELLABLE_STATUSES,
+  ADMIN_CANCELLABLE_STATUSES,
+  DEFAULT_PREP_BUFFER_MINUTES,
+} from '../../shared/constants';
+import { OrderStatus } from '../../shared/types';
+import { CreateOrderDto } from './dto/create-order.dto';
+import { CustomerOrdersQueryDto, AdminOrdersQueryDto } from './dto/orders-query.dto';
+import { OrdersGateway } from './orders.gateway';
+
+@Injectable()
+export class OrdersService {
+  constructor(
+    @Inject(SUPABASE_ADMIN) private readonly supabase: SupabaseClient,
+    private readonly gateway: OrdersGateway,
+  ) {}
+
+  async createOrder(userId: string, dto: CreateOrderDto) {
+    // 1. Collect all unique product IDs, variant IDs, supplement IDs
+    const productIds = [...new Set(dto.items.map((i) => i.productId))];
+    const variantIds = [
+      ...new Set(dto.items.filter((i) => i.variantId).map((i) => i.variantId!)),
+    ];
+    const supplementIds = [
+      ...new Set(dto.items.flatMap((i) => i.supplements ?? [])),
+    ];
+
+    // 2. Fetch all referenced entities
+    const [productsRes, variantsRes, supplementsRes, junctionRes] =
+      await Promise.all([
+        this.supabase.from('products').select('*').in('id', productIds),
+        variantIds.length > 0
+          ? this.supabase
+              .from('product_variants')
+              .select('*')
+              .in('id', variantIds)
+          : { data: [], error: null },
+        supplementIds.length > 0
+          ? this.supabase
+              .from('supplements')
+              .select('*')
+              .in('id', supplementIds)
+          : { data: [], error: null },
+        supplementIds.length > 0
+          ? this.supabase
+              .from('product_supplements')
+              .select('*')
+              .in('product_id', productIds)
+              .in('supplement_id', supplementIds)
+          : { data: [], error: null },
+      ]);
+
+    if (productsRes.error) throw productsRes.error;
+    if (variantsRes.error) throw variantsRes.error;
+    if (supplementsRes.error) throw supplementsRes.error;
+    if (junctionRes.error) throw junctionRes.error;
+
+    const productsMap = new Map(productsRes.data!.map((p) => [p.id, p]));
+    const variantsMap = new Map(variantsRes.data!.map((v) => [v.id, v]));
+    const supplementsMap = new Map(supplementsRes.data!.map((s) => [s.id, s]));
+    const junctionSet = new Set(
+      junctionRes.data!.map(
+        (j) => `${j.product_id}:${j.supplement_id}`,
+      ),
+    );
+
+    // 3. Validate and calculate prices
+    let maxPrepTime = 0;
+    const orderItems: Array<{
+      product_id: string;
+      variant_id: string | null;
+      quantity: number;
+      unit_price_eur: number;
+      line_total_eur: number;
+      supplements: Array<{ id: string; name: string; priceEUR: number }>;
+      notes: string | null;
+    }> = [];
+
+    for (const item of dto.items) {
+      const product = productsMap.get(item.productId);
+      if (!product) {
+        throw new BadRequestException(
+          `Product ${item.productId} not found`,
+        );
+      }
+      if (!product.is_available) {
+        throw new BadRequestException(
+          `Product "${product.name}" is not available`,
+        );
+      }
+
+      let variant = null;
+      if (item.variantId) {
+        variant = variantsMap.get(item.variantId);
+        if (!variant || variant.product_id !== item.productId) {
+          throw new BadRequestException(
+            `Variant ${item.variantId} does not belong to product "${product.name}"`,
+          );
+        }
+      }
+
+      const itemSupplements: Array<{
+        id: string;
+        name: string;
+        priceEUR: number;
+      }> = [];
+      for (const supId of item.supplements ?? []) {
+        const supplement = supplementsMap.get(supId);
+        if (!supplement) {
+          throw new BadRequestException(`Supplement ${supId} not found`);
+        }
+        if (!junctionSet.has(`${item.productId}:${supId}`)) {
+          throw new BadRequestException(
+            `Supplement "${supplement.name}" is not available for product "${product.name}"`,
+          );
+        }
+        itemSupplements.push({
+          id: supplement.id,
+          name: supplement.name,
+          priceEUR: supplement.price_eur,
+        });
+      }
+
+      const unitPrice = recalculateLineUnitPrice(
+        product,
+        variant,
+        itemSupplements.map((s) => ({ price_eur: s.priceEUR })),
+      );
+      const lineTotal = recalculateLineTotal(
+        product,
+        variant,
+        itemSupplements.map((s) => ({ price_eur: s.priceEUR })),
+        item.quantity,
+      );
+
+      orderItems.push({
+        product_id: item.productId,
+        variant_id: item.variantId ?? null,
+        quantity: item.quantity,
+        unit_price_eur: unitPrice,
+        line_total_eur: lineTotal,
+        supplements: itemSupplements,
+        notes: item.notes ?? null,
+      });
+
+      if (product.prep_time_minutes > maxPrepTime) {
+        maxPrepTime = product.prep_time_minutes;
+      }
+    }
+
+    const totalEur = recalculateOrderTotal(
+      orderItems.map((i) => ({
+        unitPriceEur: i.unit_price_eur,
+        quantity: i.quantity,
+      })),
+    );
+
+    // 4. Calculate estimated ready time
+    const estimatedReadyAt = new Date(
+      Date.now() + (maxPrepTime + DEFAULT_PREP_BUFFER_MINUTES) * 60 * 1000,
+    ).toISOString();
+
+    // 5. Insert order
+    const { data: order, error: orderError } = await this.supabase
+      .from('orders')
+      .insert({
+        user_id: userId,
+        customer_name: dto.customerName,
+        total_eur: totalEur,
+        status: 'received' as OrderStatus,
+        estimated_ready_at: estimatedReadyAt,
+        notes: dto.notes ?? null,
+      })
+      .select()
+      .single();
+
+    if (orderError) throw orderError;
+
+    // 6. Insert order items
+    const { error: itemsError } = await this.supabase
+      .from('order_items')
+      .insert(
+        orderItems.map((item) => ({
+          order_id: order.id,
+          product_id: item.product_id,
+          variant_id: item.variant_id,
+          quantity: item.quantity,
+          unit_price_eur: item.unit_price_eur,
+          line_total_eur: item.line_total_eur,
+          supplements: item.supplements,
+          notes: item.notes,
+        })),
+      );
+
+    if (itemsError) throw itemsError;
+
+    // 7. Fetch complete order with items
+    const fullOrder = await this.getOrderById(order.id);
+
+    // 8. Emit SSE event
+    this.gateway.emit({ type: 'order:created', data: fullOrder });
+
+    return fullOrder;
+  }
+
+  async getCustomerOrders(userId: string, query: CustomerOrdersQueryDto) {
+    let qb = this.supabase
+      .from('orders')
+      .select('*, order_items(*)')
+      .eq('user_id', userId);
+
+    if (query.filter === 'active') {
+      qb = qb.in('status', ['received', 'preparing', 'ready']);
+    } else if (query.filter === 'past') {
+      qb = qb.in('status', ['picked_up', 'cancelled']);
+    }
+
+    qb = qb
+      .order('created_at', { ascending: false })
+      .range(query.offset, query.offset + (query.limit ?? 20) - 1);
+
+    const { data, error } = await qb;
+    if (error) throw error;
+    return data;
+  }
+
+  async getOrderById(orderId: string) {
+    const { data, error } = await this.supabase
+      .from('orders')
+      .select('*, order_items(*)')
+      .eq('id', orderId)
+      .single();
+
+    if (error) throw new NotFoundException('Order not found');
+    return data;
+  }
+
+  async getCustomerOrderById(userId: string, orderId: string) {
+    const { data, error } = await this.supabase
+      .from('orders')
+      .select('*, order_items(*)')
+      .eq('id', orderId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error) throw new NotFoundException('Order not found');
+    return data;
+  }
+
+  async cancelCustomerOrder(userId: string, orderId: string) {
+    const order = await this.getCustomerOrderById(userId, orderId);
+
+    if (!CUSTOMER_CANCELLABLE_STATUSES.includes(order.status)) {
+      throw new BadRequestException(
+        `Cannot cancel order in "${order.status}" status`,
+      );
+    }
+
+    return this.updateStatus(orderId, 'cancelled');
+  }
+
+  // Admin methods
+  async getAdminOrders(query: AdminOrdersQueryDto) {
+    let qb = this.supabase
+      .from('orders')
+      .select('*, order_items(*)');
+
+    if (query.status) {
+      qb = qb.eq('status', query.status);
+    }
+    if (query.date_from) {
+      qb = qb.gte('created_at', query.date_from);
+    }
+    if (query.date_to) {
+      qb = qb.lte('created_at', query.date_to);
+    }
+
+    qb = qb
+      .order('created_at', { ascending: false })
+      .range(query.offset, query.offset + (query.limit ?? 20) - 1);
+
+    const { data, error } = await qb;
+    if (error) throw error;
+    return data;
+  }
+
+  async advanceOrderStatus(orderId: string, newStatus: OrderStatus) {
+    const order = await this.getOrderById(orderId);
+    const allowed = ORDER_STATUS_TRANSITIONS[order.status as OrderStatus];
+
+    if (!allowed.includes(newStatus)) {
+      throw new BadRequestException(
+        `Cannot transition from "${order.status}" to "${newStatus}"`,
+      );
+    }
+
+    return this.updateStatus(orderId, newStatus);
+  }
+
+  async adminCancelOrder(orderId: string) {
+    const order = await this.getOrderById(orderId);
+
+    if (!ADMIN_CANCELLABLE_STATUSES.includes(order.status)) {
+      throw new BadRequestException(
+        `Cannot cancel order in "${order.status}" status`,
+      );
+    }
+
+    return this.updateStatus(orderId, 'cancelled');
+  }
+
+  private async updateStatus(orderId: string, status: OrderStatus) {
+    const updateData: Record<string, unknown> = { status };
+    if (status === 'picked_up') {
+      updateData.picked_up_at = new Date().toISOString();
+    }
+
+    const { data, error } = await this.supabase
+      .from('orders')
+      .update(updateData)
+      .eq('id', orderId)
+      .select('*, order_items(*)')
+      .single();
+
+    if (error) throw error;
+
+    const eventType =
+      status === 'cancelled' ? 'order:cancelled' : 'order:status_changed';
+    this.gateway.emit({ type: eventType, data });
+
+    return data;
+  }
+}

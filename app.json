@@ -80,7 +80,7 @@
         "@rnmapbox/maps",
         {
           "RNMapboxMapsImpl": "mapbox",
-          "RNMapboxMapsVersion": "11.11.0",
+          "RNMapboxMapsVersion": "11.18.2",
           "RNMapboxMapsDownloadToken": "sk.your_secret_downloads_token_here"
         }
       ],
@@ -88,7 +88,7 @@
         "@badatgil/expo-mapbox-navigation",
         {
           "accessToken": "pk.your_public_token_here",
-          "mapboxMapsVersion": "11.11.0"
+          "mapboxMapsVersion": "11.18.2"
         }
       ]
     ],
