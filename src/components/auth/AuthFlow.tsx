@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -8,18 +9,28 @@ import {
   View,
 } from "react-native";
 import { Image } from "expo-image";
-import { ArrowLeft } from "lucide-react-native";
+import { Eye, EyeOff } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { colors } from "@/constants/theme";
+import { getSupabase } from "@/lib/supabase";
+import { apiErrorMessage } from "@/lib/api";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const logoImage = require("../../../assets/images/pops-logo.png") as number;
 
-const MOCK_OTP = "000000";
-const OTP_LENGTH = MOCK_OTP.length;
-const PHONE_REGEX = /^0[67](\d{2}){4}$/;
+const PHONE_REGEX = /^(?:\+?33|0)[67](?:[\s.-]?\d{2}){4}$/;
+
+function normalizePhone(raw: string): string {
+  // Strip spaces / punctuation, convert leading 0 → +33 so Supabase matches
+  // the canonical E.164 form admin used at creation time.
+  const compact = raw.replace(/[\s.\-()]/g, "");
+  if (compact.startsWith("+")) return compact;
+  if (compact.startsWith("33")) return `+${compact}`;
+  if (compact.startsWith("0")) return `+33${compact.slice(1)}`;
+  return compact;
+}
 
 function formatFrenchMobile(raw: string): string {
   const digits = raw.replace(/\D/g, "").slice(0, 10);
@@ -31,211 +42,47 @@ export type AuthFlowProps = {
 };
 
 export default function AuthFlow({ onComplete }: AuthFlowProps): React.ReactElement {
-  const [step, setStep] = useState<"phone" | "otp">("phone");
   const [phone, setPhone] = useState("");
-  const [otp, setOtp] = useState<string[]>(() => Array(OTP_LENGTH).fill(""));
-  const [phoneError, setPhoneError] = useState<string | undefined>();
-  const [otpError, setOtpError] = useState<string | undefined>();
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [loading, setLoading] = useState(false);
 
-  const otpRefs = Array.from({ length: OTP_LENGTH }, () =>
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useRef<TextInput>(null),
-  );
-
-  const handlePhoneChange = (v: string): void => {
-    setPhone(formatFrenchMobile(v));
-    setPhoneError(undefined);
-  };
-
-  const handleSendCode = (): void => {
-    const digits = phone.replace(/\s/g, "");
-    if (!PHONE_REGEX.test(digits)) {
-      setPhoneError("Numéro invalide. Utilise un 06 ou 07.");
+  const handleLogin = async (): Promise<void> => {
+    setError(undefined);
+    const compact = phone.replace(/\s/g, "");
+    if (!PHONE_REGEX.test(compact)) {
+      setError("Numéro invalide. Utilise un 06 ou 07.");
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
-    void Haptics.selectionAsync();
-    setStep("otp");
-    setTimeout(() => otpRefs[0].current?.focus(), 300);
-  };
-
-  const handleOtpDigit = (raw: string, index: number): void => {
-    // Accept paste / SMS autofill: distribute digits across boxes starting at `index`.
-    const digits = raw.replace(/\D/g, "");
-
-    if (digits.length === 0) {
-      // User cleared the box (e.g. selected then deleted).
-      const next = [...otp];
-      next[index] = "";
-      setOtp(next);
-      setOtpError(undefined);
+    if (password.length < 8) {
+      setError("Le mot de passe doit faire au moins 8 caractères.");
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
-
-    const next = [...otp];
-    let lastFilled = index;
-    for (let i = 0; i < digits.length && index + i < OTP_LENGTH; i++) {
-      next[index + i] = digits[i]!;
-      lastFilled = index + i;
-    }
-    setOtp(next);
-    setOtpError(undefined);
-
-    if (lastFilled < OTP_LENGTH - 1) {
-      otpRefs[lastFilled + 1].current?.focus();
-    } else {
-      otpRefs[OTP_LENGTH - 1].current?.blur();
-    }
-  };
-
-  // Submit when all boxes are filled. Done in an effect so we react to the
-  // committed state (avoids stale closures during fast typing / paste).
-  useEffect(() => {
-    if (step !== "otp") return;
-    if (otp.some((d) => d === "")) return;
-    const code = otp.join("");
-    if (code === MOCK_OTP) {
+    setLoading(true);
+    try {
+      const supabase = getSupabase();
+      const { error: authError } = await supabase.auth.signInWithPassword({
+        phone: normalizePhone(compact),
+        password,
+      });
+      if (authError) {
+        setError(authError.message);
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        return;
+      }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      const digits = phone.replace(/\s/g, "");
-      onComplete(digits);
-    } else {
-      setOtpError(`Code incorrect. Réessaye avec ${MOCK_OTP}.`);
+      onComplete(compact);
+    } catch (e) {
+      setError(apiErrorMessage(e));
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setOtp(Array(OTP_LENGTH).fill(""));
-      setTimeout(() => otpRefs[0].current?.focus(), 200);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [otp, step]);
-
-  const handleOtpBackspace = (index: number): void => {
-    if (otp[index] === "" && index > 0) {
-      otpRefs[index - 1].current?.focus();
-      const next = [...otp];
-      next[index - 1] = "";
-      setOtp(next);
-      setOtpError(undefined);
+    } finally {
+      setLoading(false);
     }
   };
 
-  // ── OTP STEP ──
-  if (step === "otp") {
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: colors.primary }}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={{ flex: 1 }}
-        >
-          <View style={{ flex: 1, paddingHorizontal: 32, paddingTop: 16 }}>
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 32,
-              }}
-            >
-              <Pressable
-                onPress={() => {
-                  setStep("phone");
-                  setOtp(Array(OTP_LENGTH).fill(""));
-                  setOtpError(undefined);
-                }}
-                hitSlop={16}
-              >
-                <ArrowLeft size={28} color={colors.ink} strokeWidth={2.5} />
-              </Pressable>
-              <Image
-                source={logoImage}
-                contentFit="contain"
-                style={{ width: 60, height: 60 }}
-              />
-              <View style={{ width: 28 }} />
-            </View>
-
-            <Text
-              style={{
-                fontFamily: "BebasNeue_400Regular",
-                fontSize: 44,
-                lineHeight: 46,
-                letterSpacing: 2,
-                color: colors.ink,
-              }}
-            >
-              ENTRE TON CODE
-            </Text>
-
-            <Text
-              style={{
-                fontFamily: "Poppins_500Medium",
-                fontSize: 14,
-                color: "rgba(0,0,0,0.55)",
-                marginTop: 8,
-              }}
-            >
-              Code envoyé au {phone}
-            </Text>
-
-            <View style={{ flexDirection: "row", gap: 8, marginTop: 36 }}>
-              {otp.map((digit, i) => (
-                <TextInput
-                  key={i}
-                  ref={otpRefs[i]}
-                  value={digit}
-                  onChangeText={(v) => handleOtpDigit(v, i)}
-                  onKeyPress={({ nativeEvent }) => {
-                    if (nativeEvent.key === "Backspace") handleOtpBackspace(i);
-                  }}
-                  keyboardType="number-pad"
-                  // Allow the full code so SMS autofill / paste isn't truncated;
-                  // handleOtpDigit distributes the digits across the boxes.
-                  maxLength={OTP_LENGTH}
-                  textContentType="oneTimeCode"
-                  autoComplete="sms-otp"
-                  selectTextOnFocus
-                  style={{
-                    flex: 1,
-                    height: 64,
-                    borderRadius: 14,
-                    backgroundColor: colors.ink,
-                    textAlign: "center",
-                    fontFamily: "BebasNeue_400Regular",
-                    fontSize: 28,
-                    color: colors.primary,
-                  }}
-                />
-              ))}
-            </View>
-
-            {otpError !== undefined ? (
-              <Text
-                style={{
-                  fontFamily: "Poppins_600SemiBold",
-                  fontSize: 13,
-                  color: colors.accent,
-                  marginTop: 16,
-                }}
-              >
-                {otpError}
-              </Text>
-            ) : (
-              <Text
-                style={{
-                  fontFamily: "Poppins_400Regular",
-                  fontSize: 12,
-                  color: "rgba(0,0,0,0.35)",
-                  marginTop: 16,
-                }}
-              >
-                Code de démo : {MOCK_OTP}
-              </Text>
-            )}
-          </View>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    );
-  }
-
-  // ── PHONE STEP ──
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.primary }}>
       <KeyboardAvoidingView
@@ -269,10 +116,11 @@ export default function AuthFlow({ onComplete }: AuthFlowProps): React.ReactElem
               fontSize: 14,
               color: "rgba(0,0,0,0.55)",
               marginTop: 8,
-              maxWidth: 280,
+              maxWidth: 320,
             }}
           >
-            Entre ton numéro pour démarrer ta tournée. Pas de spam, promis.
+            Ton compte est créé par le restaurant. Entre ton numéro et le mot de
+            passe qu&apos;on t&apos;a donné.
           </Text>
 
           <View
@@ -281,7 +129,7 @@ export default function AuthFlow({ onComplete }: AuthFlowProps): React.ReactElem
               borderRadius: 16,
               paddingHorizontal: 20,
               paddingVertical: 18,
-              marginTop: 36,
+              marginTop: 28,
               flexDirection: "row",
               alignItems: "center",
               gap: 12,
@@ -298,7 +146,10 @@ export default function AuthFlow({ onComplete }: AuthFlowProps): React.ReactElem
             </Text>
             <TextInput
               value={phone}
-              onChangeText={handlePhoneChange}
+              onChangeText={(v) => {
+                setPhone(formatFrenchMobile(v));
+                setError(undefined);
+              }}
               placeholder="06 12 34 56 78"
               placeholderTextColor="rgba(255,206,0,0.35)"
               keyboardType="phone-pad"
@@ -314,7 +165,50 @@ export default function AuthFlow({ onComplete }: AuthFlowProps): React.ReactElem
             />
           </View>
 
-          {phoneError !== undefined ? (
+          <View
+            style={{
+              backgroundColor: colors.ink,
+              borderRadius: 16,
+              paddingHorizontal: 20,
+              paddingVertical: 18,
+              marginTop: 14,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 12,
+            }}
+          >
+            <TextInput
+              value={password}
+              onChangeText={(v) => {
+                setPassword(v);
+                setError(undefined);
+              }}
+              placeholder="Mot de passe"
+              placeholderTextColor="rgba(255,206,0,0.35)"
+              secureTextEntry={!showPassword}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={{
+                flex: 1,
+                fontFamily: "Poppins_600SemiBold",
+                fontSize: 18,
+                color: colors.primary,
+                paddingVertical: 0,
+              }}
+            />
+            <Pressable
+              onPress={() => setShowPassword((v) => !v)}
+              hitSlop={12}
+            >
+              {showPassword ? (
+                <EyeOff size={20} color={colors.primary} strokeWidth={2} />
+              ) : (
+                <Eye size={20} color={colors.primary} strokeWidth={2} />
+              )}
+            </Pressable>
+          </View>
+
+          {error !== undefined ? (
             <Text
               style={{
                 fontFamily: "Poppins_600SemiBold",
@@ -323,32 +217,36 @@ export default function AuthFlow({ onComplete }: AuthFlowProps): React.ReactElem
                 marginTop: 12,
               }}
             >
-              {phoneError}
+              {error}
             </Text>
           ) : null}
 
           <Pressable
-            onPress={handleSendCode}
+            onPress={loading ? undefined : handleLogin}
             style={({ pressed }) => ({
               backgroundColor: colors.ink,
               borderRadius: 999,
               paddingVertical: 18,
               alignItems: "center",
               marginTop: 28,
-              opacity: pressed ? 0.9 : 1,
+              opacity: pressed || loading ? 0.85 : 1,
             })}
           >
-            <Text
-              style={{
-                fontFamily: "Poppins_700Bold",
-                fontSize: 14,
-                letterSpacing: 1,
-                color: colors.primary,
-                textTransform: "uppercase",
-              }}
-            >
-              Recevoir le code
-            </Text>
+            {loading ? (
+              <ActivityIndicator color={colors.primary} />
+            ) : (
+              <Text
+                style={{
+                  fontFamily: "Poppins_700Bold",
+                  fontSize: 14,
+                  letterSpacing: 1,
+                  color: colors.primary,
+                  textTransform: "uppercase",
+                }}
+              >
+                Se connecter
+              </Text>
+            )}
           </Pressable>
         </View>
 

@@ -5,6 +5,7 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { configuration } from './config/configuration';
 import { validateEnv } from './config/env.validation';
 import { SupabaseModule } from './common/supabase/supabase.module';
+import { PushModule } from './common/push/push.module';
 import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
@@ -26,6 +27,7 @@ import { AuthDevModule } from './modules/auth-dev/auth-dev.module';
     }),
     JwtModule.register({ global: true }),
     SupabaseModule,
+    PushModule,
     HealthModule,
     MenuModule,
     ProfileModule,

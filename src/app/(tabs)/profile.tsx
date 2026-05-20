@@ -10,6 +10,7 @@ import { colors } from "@/constants/theme";
 import { useAuthStore } from "@/store/auth.store";
 import { useDeliveriesStore } from "@/store/deliveries.store";
 import { useProfileStore } from "@/store/profile.store";
+import { getSupabase } from "@/lib/supabase";
 
 export default function ProfileScreen(): React.ReactElement {
   const router = useRouter();
@@ -23,8 +24,13 @@ export default function ProfileScreen(): React.ReactElement {
       {
         text: "Déconnexion",
         style: "destructive",
-        onPress: () => {
+        onPress: async () => {
           resetDeliveries();
+          try {
+            await getSupabase().auth.signOut();
+          } catch {
+            // Supabase env missing or offline — fall back to local clear.
+          }
           logout();
         },
       },
