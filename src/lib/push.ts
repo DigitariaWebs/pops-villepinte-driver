@@ -7,14 +7,21 @@ import { api } from "./api";
 
 // Foreground notification handling — show alert + play sound so the driver
 // hears an incoming order even when the app is open.
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
+// Wrapped because the native module is absent in dev clients that haven't been
+// rebuilt after adding expo-notifications; failing here would break the whole
+// app at import time.
+try {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+    }),
+  });
+} catch {
+  // Native module not linked — push features will no-op until a rebuild.
+}
 
 export async function ensureNotificationChannel(): Promise<void> {
   if (Platform.OS !== "android") return;

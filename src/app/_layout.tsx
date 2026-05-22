@@ -70,13 +70,18 @@ export default function RootLayout(): React.ReactNode {
     if (!authed) return;
     registerForPushNotifications().catch(() => {});
 
-    const sub = Notifications.addNotificationResponseReceivedListener((res) => {
-      const data = res.notification.request.content.data;
-      if (isAssignmentNotification(data)) {
-        router.push(`/assignment/${data.assignment_id}`);
-      }
-    });
-    return () => sub.remove();
+    let sub: { remove: () => void } | undefined;
+    try {
+      sub = Notifications.addNotificationResponseReceivedListener((res) => {
+        const data = res.notification.request.content.data;
+        if (isAssignmentNotification(data)) {
+          router.push(`/assignment/${data.assignment_id}`);
+        }
+      });
+    } catch {
+      // Native module not linked yet — rebuild the dev client.
+    }
+    return () => sub?.remove();
   }, [authed, router]);
 
   if (!fontsLoaded) return null;
